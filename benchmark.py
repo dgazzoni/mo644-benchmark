@@ -145,7 +145,7 @@ num_runs = 10
 
 # Which tests to run (one for each file in the tests/ folder) 
 # Do not add .in extension, it's done automatically
-tests = ['1', '2', '3', '4']#, '5']
+tests = ['1', '2', '3', '4', '5']
 
 # Folder for executable files; may be different under
 # Windows when using VS's version of cmake
@@ -169,6 +169,11 @@ files = ['prime-parallel-opt1', 'prime-parallel-opt2']
 # Choice of compiler, or None to let CMake choose automatically
 c_compiler   = None # 'gcc-10' # 'icc' # 'icl' # 'x86_64-w64-mingw32-gcc-10'
 cxx_compiler = None # 'g++-10' # None  # 'icl' # 'x86_64-w64-mingw32-g++'
+
+# Extra C and C++ compiler flags that may be required for some reason
+# Use None if no extra flags are necessary
+c_flags   = None
+cxx_flags = None
 
 # As explained above, this adds a delay between each run of the code to cool
 # off the CPU and reduce, or ideally prevent, thermal throttling. This is a
@@ -213,6 +218,10 @@ def generate_makefile(generator, c_compiler, cxx_compiler):
         compiler_string += '-DCMAKE_C_COMPILER=' + c_compiler + ' '
     if cxx_compiler is not None:
         compiler_string += '-DCMAKE_CXX_COMPILER=' + cxx_compiler + ' '
+    if c_flags is not None:
+        compiler_string += '-DCMAKE_C_FLAGS=' + c_flags + ' '
+    if cxx_flags is not None:
+        compiler_string += '-DCMAKE_CXX_FLAGS=' + cxx_flags + ' '
     os.system('cmake ' + generator + compiler_string + '-DCMAKE_BUILD_TYPE=Release ..')
     os.chdir('..')
 
