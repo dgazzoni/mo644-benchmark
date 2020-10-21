@@ -150,11 +150,14 @@ tests = ['1', '2', '3', '4', '5']
 
 # Folder for executable files; may be different under
 # Windows when using VS's version of cmake
-executable_path = 'build'
+executable_path = 'build' # os.path.join('build', 'Release')
 
 # Default name for the executable of the parallel code
 # In principle this shouldn't be changed
 parallel_executable = 'parallel'
+
+# Extension for parallel files, typically either '.c' or '.cu'
+parallel_extension = '.c'
 
 # Default name for the source file of the parallel code (note this file will
 # be overwritten by the script with the baseline and optimized files)
@@ -254,13 +257,13 @@ def compile_code():
         sys.stderr.write("Compile error\n")
         sys.exit(1)
 
-def compile_all(executable_path, parallel_executable, executable_extension, parallel_src, baseline_src, files):
-    shutil.copy(os.path.join('src', baseline_src + '.c'), os.path.join('src', parallel_src + '.c'))
+def compile_all(executable_path, parallel_executable, executable_extension, parallel_extension, parallel_src, baseline_src, files):
+    shutil.copy(os.path.join('src', baseline_src + parallel_extension), os.path.join('src', parallel_src + parallel_extension))
     compile_code()
     shutil.copy(os.path.join(executable_path, parallel_executable + executable_extension), os.path.join(executable_path, baseline_src + executable_extension))
 
     for f in files:
-        shutil.copy(os.path.join('src', f + '.c'), os.path.join('src', parallel_src + '.c'))
+        shutil.copy(os.path.join('src', f + parallel_extension), os.path.join('src', parallel_src + parallel_extension))
         compile_code()
         shutil.copy(os.path.join(executable_path, parallel_executable + executable_extension), os.path.join(executable_path, f + executable_extension))
 
@@ -391,7 +394,7 @@ print('Generating Makefiles')
 generate_makefile(generator, c_compiler, cxx_compiler)
 
 print('Compiling code')
-compile_all(executable_path, parallel_executable, executable_extension, parallel_src, baseline_src, files)
+compile_all(executable_path, parallel_executable, executable_extension, parallel_extension, parallel_src, baseline_src, files)
 
 print('Starting initial run')
 (st, pt) = run_all_tests(1, tests, executable_path, executable_extension, parallel_src, baseline_src, files, delay_run, initial_run = True)
@@ -400,7 +403,8 @@ print('Starting main run')
 
 compute_and_print_statistics(tests, baseline_src, files, serial_time, parallel_time)
 
-save_to_csv(csv_output_file, num_runs, tests, baseline_src, files, serial_time, parallel_time)
+if csv_output_file is not None:
+    save_to_csv(csv_output_file, num_runs, tests, baseline_src, files, serial_time, parallel_time)
 
 
 
