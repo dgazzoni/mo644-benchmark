@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import csv
 import engineering_notation
 import hashlib
 import numpy as np
@@ -182,6 +183,9 @@ cxx_flags = None
 # of None means no delays are inserted
 delay_run = None # { '1': 0, '2': 0, '3': 1, '4': 3, '5': 6 }
 
+# Name of a file to save the measurements to (in CSV format), or None
+csv_output_file = None
+
 
 
 ## OS-specific definitions
@@ -205,6 +209,22 @@ def delay(delay_var, delay_name):
         if delay_name is not None:
             print('Sleeping between {} for {}s'.format(delay_name, delay_var), flush=True)
         time.sleep(delay_var)
+
+def save_to_csv(filename, num_runs, tests, baseline_src, files, serial_time, parallel_time):
+    all_files = [baseline_src] + files
+    with open(filename, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile, delimiter=',')
+
+        writer.writerow(['Test', 'Run', 'Serial'] + all_files)
+
+        for test in tests:
+            for run in range(num_runs):
+                row = [test,run+1,serial_time[test][run]]
+
+                for f in all_files:
+                    row += [parallel_time[test][f][run]]
+
+                writer.writerow(row)
 
 
 
@@ -359,6 +379,8 @@ def run_all_tests(num_runs, tests, executable_path, executable_extension, parall
 
     return (serial_time, parallel_time)
 
+
+
 warnings.simplefilter('ignore')
 if delay_run == None:
     print('{} total runs: {} repetitions on {} executables for test files {}'.format(num_runs*(1 + len(files))*len(tests), num_runs, 1 + len(files), tests))
@@ -377,6 +399,10 @@ print('Starting main run')
 (serial_time, parallel_time) = run_all_tests(num_runs, tests, executable_path, executable_extension, parallel_src, baseline_src, files, delay_run, initial_run = False)
 
 compute_and_print_statistics(tests, baseline_src, files, serial_time, parallel_time)
+
+save_to_csv(csv_output_file, num_runs, tests, baseline_src, files, serial_time, parallel_time)
+
+
 
 ## TODOs:
 # TODO: less runs if a test takes longer, more runs if it's shorter? Would that be enough for statistical significance?
