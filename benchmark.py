@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import csv
 import engineering_notation
 import hashlib
@@ -385,13 +386,19 @@ def run_all_tests(num_runs, tests, executable_path, executable_extension, parall
 
 
 warnings.simplefilter('ignore')
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--configure', action='store_true', help='rerun CMake configure step (required after switching compilers)')
+args = parser.parse_args()
+
 if delay_run == None:
     print('{} total runs: {} repetitions on {} executables for test files {}'.format(num_runs*(1 + len(files))*len(tests), num_runs, 1 + len(files), tests))
 else:
     print('{} total runs: {} repetitions on {} executables for test files {}, with {}-{}s delay between runs'.format(num_runs*(1 + len(files))*len(tests), num_runs, 1 + len(files), tests, min(delay_run.values()), max(delay_run.values())))
 
-print('Generating Makefiles')
-generate_makefile(generator, c_compiler, cxx_compiler)
+if args.configure or not os.path.exists('build'):
+    print('Generating Makefiles')
+    generate_makefile(generator, c_compiler, cxx_compiler)
 
 print('Compiling code')
 compile_all(executable_path, parallel_executable, executable_extension, parallel_extension, parallel_src, baseline_src, files)
