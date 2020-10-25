@@ -2,6 +2,7 @@
 
 import argparse
 import arviz as az
+import copy
 import csv
 import engineering_notation
 import hashlib
@@ -100,14 +101,15 @@ def compile_all(executable_path, parallel_executable, executable_extension,
 
 
 # Statistical functions
-def statistical_analysis(baseline, opt):
+def statistical_analysis(serial, bl, opt):
     # Inspired by https://docs.pymc.io/notebooks/BEST.html
-    y = pd.DataFrame(
-        dict(
-            value=np.r_[baseline, opt],
-            group=np.r_[['baseline']*len(baseline), ['opt']*len(opt)]
-        )
-    )
+    value = np.r_[serial, bl]
+    group = np.r_[['serial']*len(serial), ['bl']*len(bl)]
+    for f in opt:
+        value = np.r_[value, opt[f]]
+        group = np.r_[group, [f]*len(opt[f])]
+
+    y = pd.DataFrame(dict(value=value, group=group))
 
     μ_m = y.value.mean()
     μ_s = y.value.std()
@@ -115,135 +117,172 @@ def statistical_analysis(baseline, opt):
     σ_high = µ_s*1000
 
     with pm.Model() as model:
-        baseline_mean = pm.Normal('baseline_mean', mu=μ_m, sd=1000*μ_s)
-        opt_mean = pm.Normal('opt_mean', mu=μ_m, sd=1000*μ_s)
-        baseline_std = pm.Uniform('baseline_std', lower=µ_s/1000,
-                                  upper=1000*µ_s)
-        opt_std = pm.Uniform('opt_std', lower=µ_s/1000, upper=1000*µ_s)
+        serial_mean = pm.Normal('serial_mean', mu=µ_m, sd=1000*µ_s)
+        serial_std = pm.Uniform('serial_std', lower=µ_s/1000, upper=1000*µ_s)
+        λ_serial = serial_std**-2
+
+        bl_mean = pm.Normal('bl_mean', mu=μ_m, sd=1000*μ_s)
+        bl_std = pm.Uniform('bl_std', lower=µ_s/1000, upper=1000*µ_s)
+        λ_bl = bl_std**-2
+
+        opt_mean = {}
+        opt_std = {}
+        λ_opt = {}
+
+        for f in opt:
+            opt_mean[f] = pm.Normal('opt_{}_mean'.format(f),
+                                    mu=μ_m, sd=1000*μ_s)
+            opt_std[f] = pm.Uniform('opt_{}_std'.format(f),
+                                    lower=µ_s/1000, upper=1000*µ_s)
+            λ_opt[f] = opt_std[f]**-2
+
         ν = pm.Exponential('ν_minus_one', 1/29.) + 1
-        λ_baseline = baseline_std**-2
-        λ_opt = opt_std**-2
 
-        dist_baseline = pm.StudentT('baseline', nu=ν, mu=baseline_mean,
-                                    lam=λ_baseline, observed=baseline)
-        dist_opt = pm.StudentT('opt', nu=ν, mu=opt_mean,
-                               lam=λ_opt, observed=opt)
+        dist_serial = pm.StudentT('serial', nu=ν, mu=serial_mean,
+                                  lam=λ_serial, observed=serial)
+        dist_bl = pm.StudentT('bl', nu=ν, mu=bl_mean, lam=λ_bl, observed=bl)
 
-        diff_of_means = pm.Deterministic('difference of means',
-                                         baseline_mean - opt_mean)
-        ratio_of_means = pm.Deterministic('ratio of means',
-                                          baseline_mean/opt_mean)
+        dist_opt = {}
+        for f in opt:
+            dist_opt[f] = pm.StudentT('opt_{}'.format(f), nu=ν, mu=opt_mean[f],
+                                      lam=λ_opt[f], observed=opt[f])
+
+        dmean_serial_bl = pm.Deterministic('dmean_serial_bl',
+                                           serial_mean - bl_mean)
+
+        dmean_bl_opt = {}
+        for f in opt:
+            dmean_bl_opt[f] = pm.Deterministic('dmean_bl_opt_{}'.format(f),
+                                               bl_mean - opt_mean[f])
+
+        speedup_bl = pm.Deterministic('speedup_bl', serial_mean/bl_mean)
+
+        speedup_opt = {}
+        improv_opt = {}
+        for f in opt:
+            speedup_opt = pm.Deterministic('speedup_opt_{}'.format(f),
+                                           serial_mean/opt_mean[f])
+            improv_opt = pm.Deterministic('improv_opt_{}'.format(f),
+                                          bl_mean/opt_mean[f])
 
         trace = pm.sample(draws=3000, tune=2000)
 
-        baseline_hdi = az.hdi(trace['baseline_mean'])
-        baseline_out = (baseline_hdi[0],
-                        trace['baseline_mean'].mean(),
-                        baseline_hdi[1])
+        res1 = [('serial', 'serial_mean'), ('bl', 'bl_mean')]
+        res2 = [('bl', 'speedup_bl')]
+        res3 = []
+        res4 = [('bl', 'dmean_serial_bl')]
 
-        opt_hdi = az.hdi(trace['opt_mean'])
-        opt_out = (opt_hdi[0], trace['opt_mean'].mean(), opt_hdi[1])
+        for f in opt:
+            res1 += [('opt_{}'.format(f), 'opt_{}_mean'.format(f))]
+            res2 += [('opt_{}'.format(f), 'speedup_opt_{}'.format(f))]
+            res3 += [('opt_{}'.format(f), 'improv_opt_{}'.format(f))]
+            res4 += [('opt_{}'.format(f), 'dmean_bl_opt_{}'.format(f))]
 
-        speedup_hdi = az.hdi(trace['ratio of means'])
-        speedup = (speedup_hdi[0],
-                   trace['ratio of means'].mean(),
-                   speedup_hdi[1])
+        runtime = {}
+        for r in res1:
+            tr = trace[r[1]]
+            hdi = az.hdi(tr)
+            runtime[r[0]] = (hdi[0], tr.mean(), hdi[1])
 
-        dif = trace['difference of means'] > 0
-        prob = (dif > 0).sum()/len(dif)
+        speedup = {}
+        for r in res2:
+            tr = trace[r[1]]
+            hdi = az.hdi(tr)
+            speedup[r[0]] = (hdi[0], tr.mean(), hdi[1])
 
-    return (baseline_out, opt_out, speedup, prob)
+        improv = {}
+        for r in res3:
+            tr = trace[r[1]]
+            hdi = az.hdi(tr)
+            improv[r[0]] = (hdi[0], tr.mean(), hdi[1])
+
+        prob = {}
+        for r in res4:
+            tr = trace[r[1]]
+            prob[r[0]] = (tr > 0).sum()/len(tr)
+
+    return (runtime, speedup, improv, prob)
 
 
 def compute_all_statistics(tests, baseline_src, files, serial_time,
                            parallel_time):
-    serial_hdi = {}
-    bl_hdi = {}
-    bl_speedup_hdi = {}
-    bl_prob_hdi = {}
-    bl_hdi2 = {}
-    opt_hdi = {}
-    opt_improv_hdi = {}
-    opt_prob_hdi = {}
-
+    runtime = {}
+    speedup = {}
+    improv = {}
+    prob = {}
     for test in tests:
-        print('\nComputing baseline statistics for test {}'.format(test))
-        (serial_hdi[test],
-         bl_hdi[test],
-         bl_speedup_hdi[test],
-         bl_prob_hdi[test]) = statistical_analysis(
-             serial_time[test], parallel_time[test][baseline_src])
+        print('\nComputing statistics for test {}'.format(test))
 
-        bl_hdi2[test] = {}
-        opt_hdi[test] = {}
-        opt_improv_hdi[test] = {}
-        opt_prob_hdi[test] = {}
+        parallel_time_opt = dict(parallel_time[test])
+        del parallel_time_opt[baseline_src]
 
-        for f in files:
-            print("\nComputing statistics for file '{}', "
-                  "test {}".format(f, test))
-            (bl_hdi2[test][f],
-             opt_hdi[test][f],
-             opt_improv_hdi[test][f],
-             opt_prob_hdi[test][f]) = statistical_analysis(
-                parallel_time[test][baseline_src], parallel_time[test][f]
-            )
+        (runtime[test],
+         speedup[test],
+         improv[test],
+         prob[test]) = statistical_analysis(serial_time[test],
+                                            parallel_time[test][baseline_src],
+                                            parallel_time_opt)
 
-    return (serial_hdi, bl_hdi, bl_speedup_hdi, bl_prob_hdi,
-            bl_hdi2, opt_hdi, opt_improv_hdi, opt_prob_hdi)
+    return (runtime, speedup, improv, prob)
 
 
 def compute_and_print_statistics(tests, baseline_src, files, serial_time,
                                  parallel_time):
     print('\nComputing statistics, this may take a while')
 
-    (serial_hdi, bl_hdi, bl_speedup_hdi, bl_prob_hdi,
-     bl_hdi2, opt_hdi, opt_improv_hdi, opt_prob_hdi) = compute_all_statistics(
+    (runtime, speedup, improv, prob) = compute_all_statistics(
         tests, baseline_src, files, serial_time, parallel_time)
 
+# mean_hdi = {'serial': (0.15587743679848312, 0.17613302536715786, 0.1966362345600191), 'bl': (0.06850445536639674, 0.07938544135027918, 0.08983487752277639), 'opt_prime-parallel-opt1': (0.04396397935883614, 0.050227959059451925, 0.056229120847263746)}
+# speedup_hdi = {'bl': (1.8365740736468075, 2.231884722714229, 2.6695422080692643), 'opt_prime-parallel-opt1': (2.9154644290875438, 3.5250772009726465, 4.140117390670471)}
+# improv_hdi = {'opt_prime-parallel-opt1': (1.2904857283657176, 1.5889737806802215, 1.8921090325593688)}
+# prob = {'bl': 0.0, 'opt_prime-parallel-opt1': 0.003416666666666667}
+
     print('\nStatistics:')
-    print('Baseline:')
+    print('\tBaseline:')
     for test in tests:
         print(
-            '\tTest {}:\n'
-            '\t\tavg speedup = {:.4f}x HDI = ({:.4f}x,{:.4f}x)\n'
-            '\t\tavg tser = {}s HDI = ({},{})\n'
-            '\t\tavg tpar = {}s HDI = ({},{})\n'
-            '\t\tP(tpar < tser) = {:.1f}%'.format(
+            '\t\tTest {}:\n'
+            '\t\t\tavg speedup = {:.4f}x HDI = ({:.4f}x,{:.4f}x)\n'
+            '\t\t\tavg tser = {}s HDI = ({},{})\n'
+            '\t\t\tavg tpar = {}s HDI = ({},{})\n'
+            '\t\t\tP(tpar < tser) = {:.1f}%'.format(
                 test,
-                bl_speedup_hdi[test][1],
-                bl_speedup_hdi[test][0],
-                bl_speedup_hdi[test][2],
-                eng(serial_hdi[test][1]),
-                eng(serial_hdi[test][0]),
-                eng(serial_hdi[test][2]),
-                eng(bl_hdi[test][1]),
-                eng(bl_hdi[test][0]),
-                eng(bl_hdi[test][2]),
-                100*bl_prob_hdi[test]
+                speedup[test]['bl'][1],
+                speedup[test]['bl'][0],
+                speedup[test]['bl'][2],
+                eng(runtime[test]['serial'][1]),
+                eng(runtime[test]['serial'][0]),
+                eng(runtime[test]['serial'][2]),
+                eng(runtime[test]['bl'][1]),
+                eng(runtime[test]['bl'][0]),
+                eng(runtime[test]['bl'][2]),
+                100*prob[test]['bl']
             )
         )
 
     for f in files:
-        print('File {}:'.format(f))
+        print('\tFile {}:'.format(f))
         for test in tests:
+            key = 'opt_{}'.format(f)
             print(
-                '\tTest {}:\n'
-                '\t\tavg improvement = {:.4f}x HDI = ({:.4f}x,{:.4f}x)\n'
-                '\t\tavg tbl  = {}s HDI = ({},{})\n'
-                '\t\tavg topt = {}s HDI = ({},{})\n'
-                '\t\tP(topt < tbl) = {:.1f}%'.format(
+                '\t\tTest {}:\n'
+                '\t\t\tavg speedup = {:4f}x HDI = ({:.4f}x,{:.4f}x)\n'
+                '\t\t\tavg improvement over baseline = {:.4f}x '
+                'HDI = ({:.4f}x,{:.4f}x)\n'
+                '\t\t\tavg topt = {}s HDI = ({},{})\n'
+                '\t\t\tP(topt < tbl) = {:.1f}%'.format(
                     test,
-                    opt_improv_hdi[test][f][1],
-                    opt_improv_hdi[test][f][0],
-                    opt_improv_hdi[test][f][2],
-                    eng(bl_hdi2[test][f][1]),
-                    eng(bl_hdi2[test][f][0]),
-                    eng(bl_hdi2[test][f][2]),
-                    eng(opt_hdi[test][f][1]),
-                    eng(opt_hdi[test][f][0]),
-                    eng(opt_hdi[test][f][2]),
-                    100*opt_prob_hdi[test][f]
+                    speedup[test][key][1],
+                    speedup[test][key][0],
+                    speedup[test][key][2],
+                    improv[test][key][1],
+                    improv[test][key][0],
+                    improv[test][key][2],
+                    eng(runtime[test][key][1]),
+                    eng(runtime[test][key][0]),
+                    eng(runtime[test][key][2]),
+                    100*prob[test][key]
                 )
             )
 
@@ -359,60 +398,62 @@ def run_all_tests(num_runs, tests, executable_path, executable_extension,
 ###############################################################################
 #
 # Statistics:
-# Baseline:
-#     Test 1:
-#         avg speedup = 2.3918x HDI = (2.3911x,2.3925x)
-#         avg tser = 206.304ms HDI = (206.261m,206.348m)
-#         avg tpar = 86.254ms HDI = (86.237m,86.271m)
-#         P(tpar < tser) = 100.0%
+# 	Baseline:
+# 		Test 1:
+# 			avg speedup = 2.3907x HDI = (2.3897x,2.3918x)
+# 			avg tser = 206.216ms HDI = (206.156m,206.280m)
+# 			avg tpar = 86.257ms HDI = (86.231m,86.284m)
+# 			P(tpar < tser) = 100.0%
 #
-#         ...
+#       ...
 #
-#     Test 5:
-#         avg speedup = 2.3576x HDI = (2.3571x,2.3581x)
-#         avg tser = 40.894s HDI = (40.891,40.897)
-#         avg tpar = 17.346s HDI = (17.342,17.349)
-#         P(tpar < tser) = 100.0%
-# File xxx:
-#     Test 1:
-#         avg improvement = 1.6256x HDI = (1.6252x,1.6260x)
-#         avg tbl  = 86.243ms HDI = (86.236m,86.249m)
-#         avg topt = 53.053ms HDI = (53.040m,53.067m)
-#         P(topt < tbl) = 100.0%
+# 		Test 5:
+# 			avg speedup = 2.3575x HDI = (2.3568x,2.3581x)
+# 			avg tser = 40.891s HDI = (40.887,40.895)
+# 			avg tpar = 17.345s HDI = (17.341,17.349)
+# 			P(tpar < tser) = 100.0%
+# 	File xxx:
+# 		Test 1:
+# 			avg speedup = 3.885661x HDI = (3.8836x,3.8879x)
+# 			avg improvement over baseline = 1.6253x HDI = (1.6244x,1.6262x)
+# 			avg topt = 53.071ms HDI = (53.048m,53.096m)
+# 			P(topt < tbl) = 100.0%
 #
-#         ...
-#
-#     Test 5:
-#         avg improvement = 1.6856x HDI = (1.6853x,1.6858x)
-#         avg tbl  = 17.345s HDI = (17.344,17.346)
-#         avg topt = 10.291s HDI = (10.290,10.292)
-#         P(topt < tbl) = 100.0%
+#       ...
+# 
+#  		Test 5:
+# 			avg speedup = 3.973781x HDI = (3.9719x,3.9756x)
+# 			avg improvement over baseline = 1.6856x HDI = (1.6847x,1.6864x)
+# 			avg topt = 10.290s HDI = (10.286,10.295)
+# 			P(topt < tbl) = 100.0%
 ###############################################################################
 #
 # Results are grouped by file (baseline and optimized files) and then by test
 # number.
 #
 # Speedups are given as the ratio of the serial and parallel execution times.
-# Improvements between the optimized and baseline parallel version are given
-# by the ratio of the baseline parallel execution time by the optimized
-# parallel execution time. The execution times are also reported.
+# Improvements of the optimized version over the baseline parallel version are
+# given by the ratio of the baseline parallel execution time by the optimized
+# parallel execution time. The execution times of each version are also
+# reported.
 #
 # Bayesian analysis is performed on the datasets to obtain a point estimate
-# (mean of each variable) as well as 95% credible intervals for each. A
-# probability that one of the execution times is smaller than the other one is
-# reported; if low or high enough (say, 5% or 95%), then it is reasonable to
-# assume that a difference actually exists.
+# (mean of each variable) as well as 95% credible intervals for each -- i.e.
+# the real mean has 95% chance of lying within this interval. Also reported is
+# the probability that the execution time for one version is smaller than the
+# execution time for another one; if low or high enough (say, < 5% or > 95%),
+# then such a difference cannot reasonably be attributed to noise only.
 #
-# Note that intersecting credible intervals, or probabilities in the range
-# (5%,95%) may either indicate there is no discernible difference between the
-# execution time of the baseline and optimized files, or that the number of
-# runs is insufficient to declare that a statistically significant difference
-# exists. It's up to you to interpret which one is the case in your runs, and
-# if necessary, run the script again increasing the 'num_runs' variable to
-# try to achieve a definite answer.
+# Note that intersecting credible intervals or non-extreme probabilities may
+# either indicate there is no discernible difference between the execution time
+# of the baseline and optimized files, or that the number of runs is
+# insufficient to declare that a statistically significant difference exists.
+# It's up to you to interpret which one is the case, and if necessary, run the
+# script again increasing the 'num_runs' variable to seek a definitive answer.
 
 
 # BEST PRACTICES FOR BENCHMARKING
+#
 # For best results, you should close off as many apps/services as possible,
 # as anything competing for CPU time will potentially poison the results.
 #
@@ -458,11 +499,11 @@ if __name__ == '__main__':
 
     # How many repeated runs (of all files and tests)
     # Use more if needed to achieve statistical significance
-    num_runs = 50
+    num_runs = 10
 
     # Which tests to run (one for each file in the 'tests' folder)
     # Do not add .in extension, it's done automatically
-    tests = ['1', '2', '3', '4', '5']
+    tests = ['1', '2', '3'] #, '4', '5']
 
     # Folder for executable files; may be different under
     # Windows when using VS's version of cmake
