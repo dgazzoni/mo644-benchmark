@@ -267,7 +267,7 @@ def compute_and_print_statistics(tests, baseline_src, files, serial_time,
             key = 'opt_{}'.format(f)
             print(
                 '\t\tTest {}:\n'
-                '\t\t\tavg speedup = {:4f}x HDI = ({:.4f}x,{:.4f}x)\n'
+                '\t\t\tavg speedup = {:.4f}x HDI = ({:.4f}x,{:.4f}x)\n'
                 '\t\t\tavg improvement over baseline = {:.4f}x '
                 'HDI = ({:.4f}x,{:.4f}x)\n'
                 '\t\t\tavg topt = {}s HDI = ({},{})\n'
@@ -499,11 +499,11 @@ if __name__ == '__main__':
 
     # How many repeated runs (of all files and tests)
     # Use more if needed to achieve statistical significance
-    num_runs = 10
+    num_runs = 30
 
     # Which tests to run (one for each file in the 'tests' folder)
     # Do not add .in extension, it's done automatically
-    tests = ['1', '2', '3'] #, '4', '5']
+    tests = ['1', '2', '3', '4', '5']
 
     # Folder for executable files; may be different under
     # Windows when using VS's version of cmake
