@@ -233,11 +233,6 @@ def compute_and_print_statistics(tests, baseline_src, files, serial_time,
     (runtime, speedup, improv, prob) = compute_all_statistics(
         tests, baseline_src, files, serial_time, parallel_time)
 
-# mean_hdi = {'serial': (0.15587743679848312, 0.17613302536715786, 0.1966362345600191), 'bl': (0.06850445536639674, 0.07938544135027918, 0.08983487752277639), 'opt_prime-parallel-opt1': (0.04396397935883614, 0.050227959059451925, 0.056229120847263746)}
-# speedup_hdi = {'bl': (1.8365740736468075, 2.231884722714229, 2.6695422080692643), 'opt_prime-parallel-opt1': (2.9154644290875438, 3.5250772009726465, 4.140117390670471)}
-# improv_hdi = {'opt_prime-parallel-opt1': (1.2904857283657176, 1.5889737806802215, 1.8921090325593688)}
-# prob = {'bl': 0.0, 'opt_prime-parallel-opt1': 0.003416666666666667}
-
     print('\nStatistics:')
     print('\tBaseline:')
     for test in tests:
@@ -420,7 +415,7 @@ def run_all_tests(num_runs, tests, executable_path, executable_extension,
 # 			P(topt < tbl) = 100.0%
 #
 #       ...
-# 
+#
 #  		Test 5:
 # 			avg speedup = 3.973781x HDI = (3.9719x,3.9756x)
 # 			avg improvement over baseline = 1.6856x HDI = (1.6847x,1.6864x)
