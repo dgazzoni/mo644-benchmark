@@ -101,15 +101,19 @@ def compile_all(executable_path, parallel_executable, executable_extension,
 
 
 # Statistical functions
-def statistical_analysis(serial, bl, opt):
-    # Inspired by https://docs.pymc.io/notebooks/BEST.html
+def create_pd_data_frame(serial, bl, opt):
     value = np.r_[serial, bl]
     group = np.r_[['serial']*len(serial), ['bl']*len(bl)]
     for f in opt:
         value = np.r_[value, opt[f]]
         group = np.r_[group, [f]*len(opt[f])]
 
-    y = pd.DataFrame(dict(value=value, group=group))
+    return pd.DataFrame(dict(value=value, group=group))
+
+
+def statistical_analysis(serial, bl, opt):
+    # Inspired by https://docs.pymc.io/notebooks/BEST.html
+    y = create_pd_data_frame(serial, bl, opt)
 
     μ_m = y.value.mean()
     μ_s = y.value.std()
@@ -204,8 +208,40 @@ def statistical_analysis(serial, bl, opt):
     return (runtime, speedup, improv, prob)
 
 
-def compute_all_statistics(tests, baseline_src, files, serial_time,
-                           parallel_time):
+def compute_summary_statistics(tests, baseline_src, files, serial_time,
+                               parallel_time):
+    runtime_mean = {}
+    runtime_sd = {}
+    speedup = {}
+    for test in tests:
+        runtime_mean[test] = {}
+        runtime_sd[test] = {}
+        speedup[test] = {}
+
+        parallel_time_opt = dict(parallel_time[test])
+        del parallel_time_opt[baseline_src]
+
+        y = create_pd_data_frame(serial_time[test],
+                                 parallel_time[test][baseline_src],
+                                 parallel_time_opt)
+
+        runtime_mean[test]['serial'] = y[y['group'] == 'serial'].mean().value
+        runtime_sd[test]['serial'] = y[y['group'] == 'serial'].std().value
+        runtime_mean[test]['bl'] = y[y['group'] == 'bl'].mean().value
+        runtime_sd[test]['bl'] = y[y['group'] == 'bl'].std().value
+        speedup[test]['bl'] = runtime_mean[test]['serial'] \
+            / runtime_mean[test]['bl']
+        for f in parallel_time_opt:
+            runtime_mean[test][f] = y[y['group'] == f].mean().value
+            runtime_sd[test][f] = y[y['group'] == f].std().value
+            speedup[test][f] = runtime_mean[test]['serial'] \
+                / runtime_mean[test][f]
+
+    return (runtime_mean, runtime_sd, speedup)
+
+
+def compute_full_statistics(tests, baseline_src, files, serial_time,
+                            parallel_time):
     runtime = {}
     speedup = {}
     improv = {}
@@ -226,11 +262,51 @@ def compute_all_statistics(tests, baseline_src, files, serial_time,
     return (runtime, speedup, improv, prob)
 
 
-def compute_and_print_statistics(tests, baseline_src, files, serial_time,
-                                 parallel_time):
-    print('\nComputing statistics, this may take a while')
+def compute_and_print_summary_statistics(tests, baseline_src, files,
+                                         serial_time, parallel_time):
+    print('\nSummary statistics, format = mean (SD):')
 
-    (runtime, speedup, improv, prob) = compute_all_statistics(
+    (runtime_mean, runtime_sd, speedup) = compute_summary_statistics(
+        tests, baseline_src, files, serial_time, parallel_time)
+
+    print('\tBaseline:')
+    for test in tests:
+        print(
+            '\t\tTest {}: speedup = {:.4f}x, '
+            'tser = {}s ({}s), '
+            'tpar = {}s ({}s)'.format(
+                test,
+                speedup[test]['bl'],
+                eng(runtime_mean[test]['serial']),
+                eng(runtime_sd[test]['serial']),
+                eng(runtime_mean[test]['bl']),
+                eng(runtime_sd[test]['bl'])
+            )
+        )
+
+    for f in files:
+        print('\tFile {}:'.format(f))
+        for test in tests:
+            key = 'opt_{}'.format(f)
+            print(
+                '\t\tTest {}: speedup = {:.4f}x, '
+                'tser = {}s ({}s), '
+                'tpar = {}s ({}s)'.format(
+                    test,
+                    speedup[test][f],
+                    eng(runtime_mean[test]['serial']),
+                    eng(runtime_sd[test]['serial']),
+                    eng(runtime_mean[test][f]),
+                    eng(runtime_sd[test][f])
+                )
+            )
+
+
+def compute_and_print_full_statistics(tests, baseline_src, files, serial_time,
+                                      parallel_time):
+    print('\nComputing full statistics, this may take a while')
+
+    (runtime, speedup, improv, prob) = compute_full_statistics(
         tests, baseline_src, files, serial_time, parallel_time)
 
     print('\nStatistics:')
@@ -363,7 +439,10 @@ def run_all_tests(num_runs, tests, executable_path, executable_extension,
 # Save it in the folder that contains CMakeLists.txt.
 #
 # Install required packages using pip: arviz, engineering_notation, pandas,
-# pymc3, numpy, scipy and tqdm.
+# pymc3, numpy, scipy and tqdm. Under Windows, it's recommended to install
+# conda (https://docs.conda.io/en/latest/miniconda.html), and use it to install
+# a version of gcc (via "conda install m2w64-toolchain"). This speeds up the
+# statistical processing routines immensely.
 #
 # Save source files that you want to test in the src/ folder. Choose one
 # to be the baseline result, the one to be compared against other (presumably
@@ -560,6 +639,19 @@ if __name__ == '__main__':
         action='store_true',
         help='rerun CMake configure step (required after switching compilers)'
     )
+    parser.add_argument(
+        '--mode',
+        choices=['compile-only', 'compile-and-test', 'full'],
+        default='full',
+        help='choose what operations the script will perform (default: full)'
+    )
+    parser.add_argument(
+        '--statistics',
+        choices=['summary', 'full'],
+        default='full',
+        help='print summary (quick) or full (Bayesian, very slow) statistics '
+             '(default: full)'
+    )
     args = parser.parse_args()
 
     if delay_run is None:
@@ -589,19 +681,29 @@ if __name__ == '__main__':
     compile_all(executable_path, parallel_executable, executable_extension,
                 parallel_extension, parallel_src, baseline_src, files)
 
+    if args.mode == 'compile-only':
+        sys.exit()
+
     print('\nStarting initial run')
     (st, pt) = run_all_tests(
         1, tests, executable_path, executable_extension, parallel_src,
         baseline_src, files, delay_run, initial_run=True
     )
+
+    if args.mode == 'compile-and-test':
+        sys.exit()
+
     print('\nStarting main run')
     (serial_time, parallel_time) = run_all_tests(
         num_runs, tests, executable_path, executable_extension,
         parallel_src, baseline_src, files, delay_run, initial_run=False
     )
 
-    compute_and_print_statistics(tests, baseline_src, files, serial_time,
-                                 parallel_time)
+    compute_and_print_summary_statistics(tests, baseline_src, files,
+                                         serial_time, parallel_time)
+    if args.statistics == 'full':
+        compute_and_print_full_statistics(tests, baseline_src, files,
+                                          serial_time, parallel_time)
 
     if csv_output_file is not None:
         save_to_csv(csv_output_file, num_runs, tests, baseline_src, files,
@@ -620,4 +722,3 @@ if __name__ == '__main__':
     #       accurately)
     # TODO: break up the project into different files, this single file is
     #       getting huge
-    # TODO: add option for summary and full statistics
